@@ -46,24 +46,50 @@ pipeline {
                 sh 'npm test'
             }
         }
+
+        // Run security checks before image build and publication so vulnerable
+        // production dependencies cannot be packaged or pushed to the registry.
+        stage('Dependency security scan') {
+            agent {
+                docker {
+                    image 'node:16'
+                    args '-u 1000:1000 -e HOME=/tmp'
+                    reuseNode true
+                }
+            }
+
+            steps {
+                // Record all findings, including development dependencies.
+                sh 'npm audit --json > npm-audit-report.json || true'
+
+                // Fail on High or Critical findings in production dependencies.
+                sh 'npm audit --omit=dev --audit-level=high'
+            }
+        }
     }
 
     post {
         always {
-            // Reports and artifacts will be archived here before cleanup.
+            // Preserve the complete audit report as Jenkins build evidence.
+            archiveArtifacts(
+                artifacts: 'npm-audit-report.json',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+
             echo 'Pipeline execution finished.'
         }
 
         success {
-            echo 'Dependency installation and unit tests completed successfully.'
+            echo 'Dependencies, tests, and security checks completed successfully.'
         }
 
         failure {
-            echo 'The pipeline failed. Review the stage logs for details.'
+            echo 'The pipeline failed. Review the stage logs and audit report.'
         }
 
         cleanup {
-            // Run last so reports can be archived before deleting the workspace.
+            // Run last so reports are archived before workspace deletion.
             deleteDir()
         }
     }
