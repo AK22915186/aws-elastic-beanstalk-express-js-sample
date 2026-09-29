@@ -1,7 +1,15 @@
 pipeline {
-    // Use the Jenkins controller as the top-level agent because it has the
-    // Docker CLI connection to DinD and provides one shared workspace.
+    // Use the Jenkins controller because it has the Docker CLI connection
+    // to DinD and provides a shared workspace for all pipeline stages.
     agent any
+
+    environment {
+        // Docker Hub repository used to publish the application image.
+        IMAGE_NAME = '22915186ajika/nodejs-sample-app'
+
+        // Give every build an immutable tag based on its Jenkins build number.
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
 
     options {
         // Add timestamps to logs for troubleshooting and audit evidence.
@@ -66,6 +74,50 @@ pipeline {
                 sh 'npm audit --omit=dev --audit-level=high'
             }
         }
+
+        // Build the application image only after tests and security checks pass.
+        stage('Build Docker image') {
+            steps {
+                sh '''
+                    docker build --pull \
+                      --tag "$IMAGE_NAME:$IMAGE_TAG" \
+                      --tag "$IMAGE_NAME:latest" \
+                      .
+                '''
+            }
+        }
+
+        // Authenticate using a Jenkins-managed token and publish both tags.
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    try {
+                        withCredentials([
+                            usernamePassword(
+                                credentialsId: 'dockerhub-creds',
+                                usernameVariable: 'DOCKERHUB_USERNAME',
+                                passwordVariable: 'DOCKERHUB_TOKEN'
+                            )
+                        ]) {
+                            // Pass the token through stdin so it is not exposed
+                            // as a command-line argument or stored in the repo.
+                            sh '''
+                                echo "$DOCKERHUB_TOKEN" |
+                                  docker login \
+                                    --username "$DOCKERHUB_USERNAME" \
+                                    --password-stdin
+                            '''
+
+                            sh 'docker push "$IMAGE_NAME:$IMAGE_TAG"'
+                            sh 'docker push "$IMAGE_NAME:latest"'
+                        }
+                    } finally {
+                        // Remove Docker Hub authentication after every attempt.
+                        sh 'docker logout || true'
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -81,7 +133,7 @@ pipeline {
         }
 
         success {
-            echo 'Dependencies, tests, and security checks completed successfully.'
+            echo "Published ${IMAGE_NAME}:${IMAGE_TAG} and ${IMAGE_NAME}:latest."
         }
 
         failure {
@@ -89,7 +141,8 @@ pipeline {
         }
 
         cleanup {
-            // Run last so reports are archived before workspace deletion.
+            // Remove local image tags and workspace files after archiving.
+            sh 'docker image rm "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest" || true'
             deleteDir()
         }
     }
