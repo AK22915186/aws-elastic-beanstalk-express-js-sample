@@ -7,7 +7,7 @@ pipeline {
         // Docker Hub repository used to publish the application image.
         IMAGE_NAME = '22915186ajika/nodejs-sample-app'
 
-        // Give every build an immutable tag based on its Jenkins build number.
+        // Give every build an immutable Jenkins build-number tag.
         IMAGE_TAG = "${BUILD_NUMBER}"
     }
 
@@ -51,7 +51,11 @@ pipeline {
             }
 
             steps {
+                // The first run provides readable results in the console log.
                 sh 'npm test'
+
+                // The second run creates a machine-readable JUnit XML report.
+                sh 'npm run test:ci'
             }
         }
 
@@ -75,7 +79,7 @@ pipeline {
             }
         }
 
-        // Build the application image only after tests and security checks pass.
+        // Build the image only after tests and security checks pass.
         stage('Build Docker image') {
             steps {
                 sh '''
@@ -87,7 +91,7 @@ pipeline {
             }
         }
 
-        // Authenticate using a Jenkins-managed token and publish both tags.
+        // Authenticate with a Jenkins-managed token and publish both tags.
         stage('Push to Docker Hub') {
             steps {
                 script {
@@ -100,7 +104,7 @@ pipeline {
                             )
                         ]) {
                             // Pass the token through stdin so it is not exposed
-                            // as a command-line argument or stored in the repo.
+                            // as a command argument or stored in the repository.
                             sh '''
                                 echo "$DOCKERHUB_TOKEN" |
                                   docker login \
@@ -122,9 +126,16 @@ pipeline {
 
     post {
         always {
-            // Preserve the complete audit report as Jenkins build evidence.
+            // Publish test results and trends while tolerating builds that
+            // fail before the test stage creates a report.
+            junit(
+                testResults: 'test-results/*.xml',
+                allowEmptyResults: true
+            )
+
+            // Archive the audit and test reports as downloadable evidence.
             archiveArtifacts(
-                artifacts: 'npm-audit-report.json',
+                artifacts: 'npm-audit-report.json, test-results/*.xml',
                 allowEmptyArchive: true,
                 fingerprint: true
             )
@@ -137,7 +148,7 @@ pipeline {
         }
 
         failure {
-            echo 'The pipeline failed. Review the stage logs and audit report.'
+            echo 'The pipeline failed. Review the logs and archived reports.'
         }
 
         cleanup {
